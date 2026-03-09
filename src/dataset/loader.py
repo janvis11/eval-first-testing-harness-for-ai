@@ -6,7 +6,7 @@ from typing import Union
 import yaml
 from pydantic import ValidationError
 
-from eval_harness.dataset.schema import TestSuite
+from dataset.schema import TestSuite
 
 
 class DatasetLoadError(Exception):
