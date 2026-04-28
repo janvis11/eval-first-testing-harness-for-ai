@@ -47,20 +47,6 @@ async def sanitize(request: SanitizeRequest):
     detector = PIIDetector()
     sanitizer = PIISanitizer(PseudonymizationEngine())
 
-    # Get content as string for detection
-    if isinstance(request.content, str):
-        content_str = request.content
-    else:
-        content_str = str(request.content)
-
-    # Detect PII
-    matches = detector.detect(content_str)
-
-    # Filter by entity types if specified
-    if request.entity_types:
-        matches = [m for m in matches if m.entity_type.value in request.entity_types]
-
-    # Apply sanitization
     try:
         action = SanitizationAction(request.action or "redact")
     except ValueError:
@@ -69,11 +55,31 @@ async def sanitize(request: SanitizeRequest):
             detail=f"Invalid action: {request.action}. Must be one of: allow, redact, pseudonymize, block"
         )
 
-    result = sanitizer.sanitize(content_str, matches, action)
+    # Handle string vs JSON differently
+    if isinstance(request.content, str):
+        # String sanitization (original behavior)
+        matches = detector.detect(request.content)
+
+        # Filter by entity types if specified
+        if request.entity_types:
+            matches = [m for m in matches if m.entity_type.value in request.entity_types]
+
+        result = sanitizer.sanitize(request.content, matches, action)
+        sanitized_content = result.sanitized
+        all_matches = matches
+    else:
+        # JSON sanitization with structure preservation
+        sanitized_content, all_matches = sanitizer.sanitize_json_value(
+            request.content, action, detector
+        )
+
+        # Filter by entity types if specified
+        if request.entity_types:
+            all_matches = [m for m in all_matches if m.entity_type.value in request.entity_types]
 
     # Build transformations list
     transformations = []
-    for match in matches:
+    for match in all_matches:
         transformations.append({
             "entity_type": match.entity_type.value,
             "original": match.value,
@@ -82,10 +88,10 @@ async def sanitize(request: SanitizeRequest):
 
     return SanitizeResponse(
         original=request.content,
-        sanitized=result.sanitized,
-        entities_found=len(matches),
+        sanitized=sanitized_content,
+        entities_found=len(all_matches),
         transformations=transformations,
-        risk_score=sanitizer.calculate_risk_score(matches)
+        risk_score=sanitizer.calculate_risk_score(all_matches)
     )
 
 
