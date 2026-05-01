@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  # PIIE API Service
+  piie:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: piie-api
+    ports:
+      - "8000:8000"
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - REDIS_URL=redis://redis:6379/0
+      - PIIE_ENV=production
+      - LOG_LEVEL=INFO
+    depends_on:
+      redis:
+        condition: service_started
+    volumes:
+      - ./config:/app/config:ro
+    networks:
+      - piie-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: piie-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - piie-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PIIE MCP Server (optional)
+  piie-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: piie-mcp
+    command: ["python", "-m", "mcp_server"]
+    environment:
+      - PIIE_API_URL=http://piie:8000
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+    depends_on:
+      - piie
+    networks:
+      - piie-network
+    restart: unless-stopped
+    profiles:
+      - mcp
+
+  # Development service (override)
+  piie-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: piie-dev
+    ports:
+      - "8000:8000"
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - REDIS_URL=redis://redis:6379/0
+      - PIIE_ENV=development
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - .:/app
+      - ./config:/app/config:ro
+    depends_on:
+      - redis
+    networks:
+      - piie-network
+    restart: unless-stopped
+    profiles:
+      - dev
+
+networks:
+  piie-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+    driver: local
