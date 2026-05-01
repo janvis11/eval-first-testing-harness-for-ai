@@ -2,6 +2,10 @@
 fastapi>=0.109.0
 uvicorn>=0.27.0
 pyyaml>=6.0.1
+typer>=0.9.0
+rich>=13.0.0
+slowapi>=0.1.9
+supabase>=2.0.0
 
 # Optional: for development
 pytest>=8.0.0
