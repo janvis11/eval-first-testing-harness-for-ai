@@ -1,5 +1,5 @@
 # piie
-
+![piie](image.png)
 **piie is a privacy layer for AI applications.**
 
 It detects personal information before it reaches your LLM prompts, logs, vector databases, analytics tools, or support workflows. When piie finds sensitive data, it can redact it, pseudonymize it, allow it, or block the request.
