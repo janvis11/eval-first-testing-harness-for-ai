@@ -1,5 +1,5 @@
 """
-PII-Safe CLI
+PIIE CLI
 
 Command-line interface for PII detection and sanitization.
 """
@@ -13,13 +13,13 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from detectors import PIIDetector
-from sanitizers import PIISanitizer, SanitizationAction, PseudonymizationEngine
-from config import load_config
+from .detectors import PIIDetector
+from .sanitizers import PIISanitizer, SanitizationAction, PseudonymizationEngine
+from .config import load_config, get_pseudonymization_config, get_sanitizer_config
 
 app = typer.Typer(
-    name="piisafe",
-    help="PII-Safe: Privacy Layer for Agentic AI Systems",
+    name="piie",
+    help="PIIE: Privacy Layer for Agentic AI Systems",
     add_completion=False,
 )
 console = Console()
@@ -28,8 +28,20 @@ console = Console()
 def version_callback(value: bool):
     """Show version and exit."""
     if value:
-        console.print("[bold]PII-Safe[/bold] version 1.0.0")
+        console.print("[bold]PIIE[/bold] version 0.1.0")
         raise typer.Exit()
+
+
+def create_sanitizer() -> PIISanitizer:
+    """Create a sanitizer using environment-backed pseudonymization config."""
+    pseudo_config = get_pseudonymization_config()
+    sanitizer_config = get_sanitizer_config()
+    return PIISanitizer(
+        PseudonymizationEngine(
+            salt=pseudo_config.salt,
+            token_length=sanitizer_config.pseudonym_token_length,
+        )
+    )
 
 
 @app.callback()
@@ -38,7 +50,7 @@ def main(
         None, "--version", "-v", callback=version_callback, help="Show version and exit"
     ),
 ):
-    """PII-Safe CLI for detecting and sanitizing PII in text and files."""
+    """PIIE CLI for detecting and sanitizing PII in text and files."""
     pass
 
 
@@ -64,8 +76,8 @@ def detect_pii(
     Detect PII in text or files.
 
     Examples:
-        piisafe detect -t "Contact john@example.com"
-        piisafe detect -i data.jsonl -e EMAIL -e PHONE -o results.json
+        piie detect -t "Contact john@example.com"
+        piie detect -i data.jsonl -e EMAIL -e PHONE -o results.json
     """
     if not text and not input_file:
         console.print("[red]Error:[/red] Must specify --text or --input")
@@ -165,15 +177,15 @@ def sanitize_content(
     Sanitize PII in text or files.
 
     Examples:
-        piisafe sanitize -t "Email: john@example.com" -a redact
-        piisafe sanitize -i logs.jsonl -a pseudonymize -o sanitized.jsonl
+        piie sanitize -t "Email: john@example.com" -a redact
+        piie sanitize -i logs.jsonl -a pseudonymize -o sanitized.jsonl
     """
     if not text and not input_file:
         console.print("[red]Error:[/red] Must specify --text or --input")
         raise typer.Exit(1)
 
     detector = PIIDetector()
-    sanitizer = PIISanitizer(PseudonymizationEngine())
+    sanitizer = create_sanitizer()
 
     try:
         sanitization_action = SanitizationAction(action)
@@ -247,15 +259,15 @@ def batch_process(
     Batch process a JSONL file.
 
     Examples:
-        piisafe batch -i logs.jsonl -o sanitized.jsonl -a redact
-        piisafe batch -i data.jsonl -o out.jsonl --dry-run
+        piie batch -i logs.jsonl -o sanitized.jsonl -a redact
+        piie batch -i data.jsonl -o out.jsonl --dry-run
     """
     if not input_file.exists():
         console.print(f"[red]Error:[/red] File not found: {input_file}")
         raise typer.Exit(1)
 
     detector = PIIDetector()
-    sanitizer = PIISanitizer(PseudonymizationEngine())
+    sanitizer = create_sanitizer()
 
     try:
         sanitization_action = SanitizationAction(action)
@@ -325,8 +337,8 @@ def show_policy(
     View and manage policies.
 
     Examples:
-        piisafe policy -l
-        piisafe policy -f config/policy.yaml
+        piie policy -l
+        piie policy -f config/policy.yaml
     """
     if policy_file:
         if not policy_file.exists():
@@ -376,15 +388,15 @@ def show_stats(
     Show PII statistics for content.
 
     Examples:
-        piisafe stats -t "Contact: john@example.com, 555-1234"
-        piisafe stats -i data.json
+        piie stats -t "Contact: john@example.com, 555-1234"
+        piie stats -i data.json
     """
     if not text and not input_file:
         console.print("[red]Error:[/red] Must specify --text or --input")
         raise typer.Exit(1)
 
     detector = PIIDetector()
-    sanitizer = PIISanitizer(PseudonymizationEngine())
+    sanitizer = create_sanitizer()
 
     if text:
         content = text
@@ -412,6 +424,27 @@ def show_stats(
 
     console.print(table)
     console.print(f"\n[bold]Risk Score:[/bold] {risk_score:.2f}/1.00")
+
+
+@app.command("serve")
+def serve(
+    host: str = typer.Option("0.0.0.0", "--host", "-h", help="Host to bind to"),
+    port: int = typer.Option(8000, "--port", "-p", help="Port to listen on"),
+    reload: bool = typer.Option(False, "--reload", help="Enable auto-reload"),
+):
+    """
+    Start the PIIE server.
+
+    Examples:
+        piie serve
+        piie serve -p 8080
+        piie serve --reload
+    """
+    from .main import app
+    import uvicorn
+
+    console.print(f"[green]Starting PIIE server on[/green] {host}:{port}")
+    uvicorn.run(app, host=host, port=port, reload=reload)
 
 
 if __name__ == "__main__":
