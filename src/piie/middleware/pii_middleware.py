@@ -77,7 +77,7 @@ class PIIMiddleware(BaseHTTPMiddleware):
                 salt=pseudo_config.salt,
                 token_length=sanitizer_config.pseudonym_token_length
             ),
-            risk_block_threshold=risk_config.risk_block_threshold
+            risk_block_threshold=risk_config.risk_score_threshold_block
         )
 
         # Use configured exclude paths
@@ -94,8 +94,19 @@ class PIIMiddleware(BaseHTTPMiddleware):
             except Exception as e:
                 logger.warning(f"Could not initialize audit store: {e}")
                 self.audit_store = None
-        else:
-            self.audit_store = None
+            else:
+                self.audit_store = None
+
+    def _is_excluded_path(self, path: str) -> bool:
+        """Return True when a path should bypass PII middleware."""
+        for excluded in self.exclude_paths:
+            if excluded == "/":
+                if path == "/":
+                    return True
+                continue
+            if path == excluded or path.startswith(f"{excluded.rstrip('/')}/"):
+                return True
+        return False
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """
@@ -109,7 +120,7 @@ class PIIMiddleware(BaseHTTPMiddleware):
             Processed Response
         """
         # Skip excluded paths
-        if request.url.path in self.exclude_paths:
+        if self._is_excluded_path(request.url.path):
             return await call_next(request)
 
         # Track timing
@@ -218,6 +229,8 @@ class PIIMiddleware(BaseHTTPMiddleware):
                 entities_by_type[entity_type] = []
             entities_by_type[entity_type].append(match)
 
+        replacements = []
+
         # Apply each policy
         for policy in self.config.get("policies", []):
             policy_entities = [e.upper() for e in policy.get("entity_types", [])]
@@ -238,27 +251,57 @@ class PIIMiddleware(BaseHTTPMiddleware):
                 result["reason"] = f"Blocked by policy: {policy.get('name', 'unnamed')}"
                 return result
 
-            # Apply sanitization
             for match in matching_matches:
-                sanitized = self.sanitizer.sanitize(
-                    text,
-                    [match],
-                    SanitizationAction(action)
-                )
+                action_enum = SanitizationAction(action)
 
-                # SECURITY: Never log original PII values
-                # Only store entity type, action, and a hash for debugging
+                if action_enum == SanitizationAction.REDACT:
+                    replacement = self.sanitizer.redaction_templates.get(
+                        match.entity_type, "[REDACTED]"
+                    )
+                elif action_enum == SanitizationAction.PSEUDONYMIZE:
+                    if self.sanitizer.pseudonym_engine is None:
+                        raise ValueError("Pseudonymization policy requires a configured salt")
+                    replacement = self.sanitizer.pseudonym_engine.generate_token(
+                        match.value,
+                        match.entity_type,
+                    )
+                elif action_enum == SanitizationAction.ALLOW:
+                    replacement = match.value
+                else:
+                    replacement = "[REDACTED]"
+
+                replacements.append((match, replacement))
+
+                # SECURITY: Never log original PII values.
                 original_hash = hashlib.sha256(match.value.encode()).hexdigest()[:8]
                 result["transformations"].append({
+                    "original": f"{match.entity_type.value}_{original_hash}",
                     "original_hash": f"{match.entity_type.value}_{original_hash}",
-                    "sanitized": sanitized.sanitized,
+                    "sanitized": replacement,
                     "entity_type": match.entity_type.value,
                     "action": action,
                     "policy": policy.get("name"),
                     "position": f"{match.start_pos}-{match.end_pos}"
                 })
 
-                result["sanitized_body"] = sanitized.sanitized
+        sanitized_body = text
+        seen_ranges = set()
+        for match, replacement in sorted(
+            replacements,
+            key=lambda item: item[0].start_pos,
+            reverse=True,
+        ):
+            match_range = (match.start_pos, match.end_pos)
+            if match_range in seen_ranges:
+                continue
+            seen_ranges.add(match_range)
+            sanitized_body = (
+                sanitized_body[:match.start_pos]
+                + replacement
+                + sanitized_body[match.end_pos:]
+            )
+
+        result["sanitized_body"] = sanitized_body
 
         return result
 
@@ -281,6 +324,10 @@ class PIIMiddleware(BaseHTTPMiddleware):
             # Also store in database if audit store is available
             if self.audit_store:
                 try:
+                    entities_found = kwargs.get("entities_found", [])
+                    if not isinstance(entities_found, list):
+                        entities_found = []
+
                     # Extract tenant_id from kwargs if available
                     tenant_id = kwargs.get("tenant_id", "unknown")
                     trace_id = kwargs.get("trace_id", hashlib.sha256(
@@ -291,7 +338,7 @@ class PIIMiddleware(BaseHTTPMiddleware):
                         tenant_id=tenant_id,
                         trace_id=trace_id,
                         action=kwargs.get("action", "unknown"),
-                        entities_found=kwargs.get("entities", []),
+                        entities_found=entities_found,
                         risk_score=kwargs.get("risk_score"),
                         policy_id=kwargs.get("policy_id"),
                         request_path=kwargs.get("path"),

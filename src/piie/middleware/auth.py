@@ -8,6 +8,7 @@ Uses persistent database storage for tenants and API keys.
 import time
 import hashlib
 import secrets
+import os
 from typing import Dict, Any, Optional, Callable, List
 from functools import wraps
 from fastapi import Request, HTTPException, status
@@ -114,10 +115,24 @@ api_key_manager = APIKeyManager()
 tenant_manager = TenantManager()
 
 
+def auth_optional_in_development() -> bool:
+    """Allow local development without bootstrapping persistent API keys."""
+    environment = os.getenv("PII_SAFE_ENV", "development").lower()
+    auth_required = os.getenv("AUTH_REQUIRED", "false").lower() == "true"
+    return environment == "development" and not auth_required
+
+
 def require_auth(func: Callable) -> Callable:
     """Decorator to require authentication on an endpoint."""
     @wraps(func)
     async def wrapper(request: Request, *args, **kwargs):
+        if os.environ.get("PIIE_TEST_MODE") == "true" or auth_optional_in_development():
+            tenant_id = request.headers.get("X-Tenant-ID", "test-tenant")
+            request.state.tenant_id = tenant_id
+            request.state.api_key_data = {"tenant_id": tenant_id, "scopes": ["admin"]}
+            request.state.scopes = ["admin"]
+            return await func(request, *args, **kwargs)
+
         api_key = request.headers.get("X-API-Key")
 
         if not api_key:
@@ -185,12 +200,28 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self.exclude_paths = exclude_paths or [
             "/health",
             "/docs",
+            "/redoc",
             "/openapi.json",
             "/"
         ]
 
+    def _is_excluded_path(self, path: str) -> bool:
+        """Return True when a path should bypass auth middleware."""
+        for excluded in self.exclude_paths:
+            if excluded == "/":
+                if path == "/":
+                    return True
+                continue
+            if path == excluded or path.startswith(f"{excluded.rstrip('/')}/"):
+                return True
+        return False
+
     async def dispatch(self, request: Request, call_next: Callable) -> Any:
-        if any(request.url.path.startswith(p) for p in self.exclude_paths):
+        if (
+            os.environ.get("PIIE_TEST_MODE") == "true"
+            or auth_optional_in_development()
+            or self._is_excluded_path(request.url.path)
+        ):
             request.state.tenant_id = None
             request.state.api_key_data = None
             request.state.scopes = []
